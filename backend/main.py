@@ -1,0 +1,364 @@
+"""
+Vedic Cognitive Fingerprint — FastAPI Backend
+All routes in one place. Clean, centralized, no scattered logic.
+"""
+
+import os
+import sys
+import uuid
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import Optional
+
+# All project files live in backend/ — no path gymnastics needed
+sys.path.insert(0, os.path.dirname(__file__))
+from astrology_api import (
+    BirthDetails, build_vedic_profile, score_behavioral_responses,
+    cross_reference, NAKSHATRA_DESCRIPTIONS, DIMENSION_LABELS,
+)
+
+app = FastAPI(title="Vedic Cognitive Fingerprint API")
+
+PORT = int(os.getenv("PORT", 8005))
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# In-memory session store (fine for hackathon)
+SESSIONS: dict = {}
+
+
+# ─── REQUEST / RESPONSE MODELS ───────────────────────────────────────────────
+
+class BirthRequest(BaseModel):
+    name:      str
+    year:      int
+    month:     int
+    date:      int
+    hours:     int
+    minutes:   int
+    seconds:   int = 0
+    latitude:  float
+    longitude: float
+    timezone:  float
+
+
+class AssessmentRequest(BaseModel):
+    session_id: str
+    responses:  dict   # { "s01": "A", "s02": "B", ... }
+
+
+class InsightRequest(BaseModel):
+    session_id: str
+
+
+# ─── ROUTES ──────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/api/vedic-profile")
+def vedic_profile(req: BirthRequest):
+    """
+    Takes birth details, calls astrology API, returns Vedic blueprint
+    + predicted cognitive scores. Creates a session.
+    """
+    try:
+        birth = BirthDetails(
+            year=req.year, month=req.month, date=req.date,
+            hours=req.hours, minutes=req.minutes, seconds=req.seconds,
+            latitude=req.latitude, longitude=req.longitude,
+            timezone=req.timezone,
+        )
+        profile = build_vedic_profile(birth)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Astrology API error: {str(e)}")
+
+    session_id = str(uuid.uuid4())
+    SESSIONS[session_id] = {
+        "name":    req.name,
+        "profile": profile,
+        "birth":   birth,
+    }
+
+    nakshatra_num  = profile.moon_nakshatra_number
+    description    = NAKSHATRA_DESCRIPTIONS.get(nakshatra_num, "")
+
+    return {
+        "session_id":             session_id,
+        "name":                   req.name,
+        "moon_nakshatra_number":  nakshatra_num,
+        "moon_nakshatra_name":    profile.moon_nakshatra_name,
+        "moon_sign":              profile.moon_sign,
+        "mercury_sign":           profile.mercury_sign,
+        "mercury_house":          profile.mercury_house,
+        "ascendant_sign":         profile.ascendant_sign,
+        "chart_svg_url":          profile.chart_svg_url,
+        "nakshatra_description":  description,
+        "predicted_scores":       profile.predicted_scores,
+    }
+
+
+@app.post("/api/score-assessment")
+def score_assessment(req: AssessmentRequest):
+    """
+    Scores 12 scenario responses, cross-references with Vedic blueprint,
+    returns fingerprint data ready for visualization.
+    """
+    session = SESSIONS.get(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    profile            = session["profile"]
+    behavioral_scores  = score_behavioral_responses(req.responses)
+    result             = cross_reference(profile.predicted_scores, behavioral_scores)
+
+    # Store for insights step
+    session["behavioral_scores"] = behavioral_scores
+    session["cross_ref"]         = result
+
+    return {
+        "session_id":        req.session_id,
+        "predicted_scores":  profile.predicted_scores,
+        "behavioral_scores": behavioral_scores,
+        "alignment_score":   result["alignment_score"],
+        "divergence_points": result["divergence_points"],
+        "aligned_traits":    result["aligned_traits"],
+        "dimension_gaps":    result["dimension_gaps"],
+        "dimension_labels":  DIMENSION_LABELS,
+    }
+
+
+@app.post("/api/generate-insights")
+def generate_insights(req: InsightRequest):
+    """
+    Generates 3-4 human, personalized insights from the cross-reference data.
+    No external AI call needed — deterministic insight engine keeps it fast.
+    """
+    session = SESSIONS.get(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    profile   = session["profile"]
+    behavioral = session.get("behavioral_scores", {})
+    cross_ref  = session.get("cross_ref", {})
+    name       = session["name"].split()[0]  # first name only
+
+    insights = _build_insights(
+        name, profile, behavioral, cross_ref
+    )
+
+    session["insights"] = insights
+    return {
+        "session_id": req.session_id,
+        "insights":   insights,
+    }
+
+
+@app.get("/api/share/{session_id}")
+def get_share(session_id: str):
+    """Returns shareable public profile data."""
+    session = SESSIONS.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+
+    profile   = session["profile"]
+    cross_ref = session.get("cross_ref", {})
+    insights  = session.get("insights", [])
+
+    return {
+        "name":                  session["name"],
+        "moon_nakshatra_name":   profile.moon_nakshatra_name,
+        "ascendant_sign":        profile.ascendant_sign,
+        "alignment_score":       cross_ref.get("alignment_score", 0),
+        "top_insight":           insights[0]["body"] if insights else "",
+        "chart_svg_url":         profile.chart_svg_url,
+        "predicted_scores":      profile.predicted_scores,
+        "behavioral_scores":     session.get("behavioral_scores", {}),
+        "dimension_labels":      DIMENSION_LABELS,
+    }
+
+
+# ─── INSIGHT ENGINE ──────────────────────────────────────────────────────────
+
+def _build_insights(name, profile, behavioral, cross_ref):
+    insights = []
+    gaps     = cross_ref.get("dimension_gaps", {})
+    aligned  = cross_ref.get("aligned_traits", [])
+    diverged = cross_ref.get("divergence_points", [])
+    pred     = profile.predicted_scores
+    beh      = behavioral
+
+    # 1. Strongest alignment — what you ARE exactly as predicted
+    if aligned:
+        dim   = max(aligned, key=lambda k: pred.get(k, 5))
+        title, body = _alignment_insight(name, dim, pred.get(dim, 5))
+        insights.append({"title": title, "body": body, "type": "aligned"})
+
+    # 2. Biggest divergence — the most interesting gap
+    if diverged:
+        dim   = max(diverged, key=lambda k: gaps.get(k, 0))
+        title, body = _divergence_insight(name, dim, pred.get(dim, 5), beh.get(dim, 5))
+        insights.append({"title": title, "body": body, "type": "divergence"})
+
+    # 3. Hidden strength — behavioral high that chart didn't predict
+    hidden = [k for k in behavioral if behavioral[k] >= 7 and pred.get(k, 5) < 6]
+    if hidden:
+        dim   = max(hidden, key=lambda k: behavioral[k])
+        title, body = _hidden_strength_insight(name, dim, beh.get(dim, 5))
+        insights.append({"title": title, "body": body, "type": "hidden"})
+
+    # 4. Growth edge — chart predicted high but behavior went low
+    edges = [k for k in pred if pred[k] >= 7 and beh.get(k, 5) <= 4]
+    if edges:
+        dim   = max(edges, key=lambda k: pred[k])
+        title, body = _growth_edge_insight(name, dim)
+        insights.append({"title": title, "body": body, "type": "growth"})
+
+    # Always return at least 3
+    if len(insights) < 3:
+        insights.append({
+            "title": "You play the long game.",
+            "body": f"Your choices showed patience and long-term thinking that most people talk about but don't actually practice. That's rarer than you think, {name}.",
+            "type": "general",
+        })
+
+    return insights[:4]
+
+
+def _alignment_insight(name, dim, score):
+    copy = {
+        "processing_speed": (
+            "Your mind moves exactly as fast as your chart said it would.",
+            f"The prediction was clear — you'd process quickly, trust the first read, move before others have finished thinking. Your choices confirmed it every time. That's not impulsiveness, {name}. That's a calibrated instinct. Most people spend years trying to develop what you already have."
+        ),
+        "reasoning_style": (
+            "Your chart called it. Intuition runs your mind.",
+            f"The prediction was intuitive processing, and your scenarios proved it — you chose feeling over data, pattern over proof, gut over spreadsheet. That's not irrational, {name}. Intuition is just pattern recognition that's too fast to show its work."
+        ),
+        "risk_tolerance": (
+            "You take risks. Your chart knew before you answered.",
+            f"Every scenario where risk was on the table, you leaned in. Your Nakshatra predicted this — and your choices matched it completely. The interesting question isn't whether you take risks, {name}. It's whether you know which risks are worth it."
+        ),
+        "focus_mode": (
+            "Details are your territory. Your chart was right about that.",
+            f"You see the small things others skip. Your chart predicted a detail-oriented mind and your choices confirmed it — you slow down where others rush, you check what others assume. That precision has a cost in speed. It pays out in accuracy."
+        ),
+        "decision_driver": (
+            "You lead with data. Your Nakshatra called this accurately.",
+            f"When facing choices with emotional stakes, you went logical. Consistently. Your chart predicted this analytical driver and your responses confirmed it. The edge case to watch, {name}: when data and humanity pull in opposite directions."
+        ),
+        "certainty_need": (
+            "You need to be sure before you move. Your chart predicted exactly that.",
+            f"Every ambiguous scenario, you paused. That's not weakness — that's the quality control function of your mind. Your chart predicted high certainty need, and your behavior matched it. The trade-off is speed. The payoff is reliability."
+        ),
+        "thinking_mode": (
+            "You think best alone. Your Nakshatra saw that coming.",
+            f"Collaborative scenarios didn't pull you in. You defaulted to internal processing — solo, quiet, thorough. Your chart predicted independent thinking and your choices confirmed it. Some of the best thinking in history happened in rooms with one person."
+        ),
+        "time_horizon": (
+            "Future-you is always in the room when you decide.",
+            f"You consistently chose the long option — invest over spend, build over collect, later over now. Your chart predicted this future orientation and your behavior matched it fully. The only risk, {name}: present-you sometimes needs things too."
+        ),
+    }
+    title, body = copy.get(dim, ("Your chart and behavior are in sync.", f"The Vedic prediction and your real choices matched closely here, {name}. That's a stable foundation."))
+    return title, body
+
+
+def _divergence_insight(name, dim, pred_score, beh_score):
+    went_higher = beh_score > pred_score
+    copy = {
+        "processing_speed": (
+            "Your chart said slow. Your choices said fast." if went_higher else "Your chart said fast. Your choices said wait.",
+            f"The prediction was deliberate, methodical processing. But when the clock was ticking, you moved fast — consistently. That gap is real, {name}. Somewhere you built speed that wasn't in your original wiring. It might be compensation. It might be growth. Worth knowing which." if went_higher
+            else f"The prediction was fast, instinct-first processing. But your choices were careful, deliberate, patient. You've built a filter over your natural speed, {name}. Whether that's wisdom or hesitation depends on whether it's serving you."
+        ),
+        "reasoning_style": (
+            "Your chart predicted logic. You chose intuition.",
+            f"Mercury suggested analytical processing — breaking things down, following evidence. But your choices went intuitive, almost every time. That's a real gap, {name}. It could mean you've learned to trust feeling over proof. It could mean analysis hasn't worked for you in the past. The gap between who your chart said you'd be and how you actually think — that's your most interesting territory."
+        ) if went_higher else (
+            "Your chart predicted intuition. You went analytical.",
+            f"The Vedic reading suggested intuitive, feeling-first processing. But you chose data over gut, evidence over instinct, consistently. That's a meaningful divergence, {name}. You may have trained analytical thinking as a survival skill, even though your natural frequency is more intuitive. The question: which one do you trust more when it really matters?"
+        ),
+        "risk_tolerance": (
+            "Your chart said careful. You chose bold.",
+            f"The prediction was risk-averse — cautious, measured, protective. But your choices leaned into risk, almost reflexively. You're operating outside your Nakshatra's comfort zone, {name}. That's either expansion — or it's a pattern of betting before you're ready. Worth sitting with."
+        ) if went_higher else (
+            "Your chart said bold. You chose safe.",
+            f"The prediction was risk-tolerant — a mind that bets on itself. But your choices were cautious, measured, protective. There's a gap between who the stars say you are and how you currently operate, {name}. Something has made you more careful than your wiring intended. That's not bad — it's just worth knowing."
+        ),
+        "decision_driver": (
+            "Your chart said data. You let emotion lead.",
+            f"The Vedic prediction was analytical — logic, evidence, structure. But when the stakes were human, you went emotional first. Every time. That gap, {name}, is one of the most human things about you. Your head says data. Your heart moves first. Learning to use both, in sequence, is the work."
+        ) if went_higher else (
+            "Your chart said heart. You went head.",
+            f"The prediction pointed to feeling-forward processing — empathy first, then analysis. But your choices were consistently data-driven, even in emotionally loaded scenarios. You've built a rational filter over a more sensitive core, {name}. The question is whether that filter is protecting you — or hiding you."
+        ),
+        "time_horizon": (
+            "Your chart said now. Your choices said later.",
+            f"The Vedic reading suggested present-focused processing — concrete, immediate, tangible. But your behavior was consistently future-oriented. You kept choosing delayed reward, long-term investment, patience over immediacy. That's not your default wiring, {name}. You've built it. That kind of self-discipline is rarer than the natural version."
+        ) if went_higher else (
+            "Your chart said later. You kept choosing now.",
+            f"The prediction was long time horizon — the kind of mind that plants trees it won't sit under. But your choices went present-tense, consistently. Immediate reward, tangible gain, now over later. There's a gap between your chart's prediction and your current pattern, {name}. Something is pulling you toward the near-term. It might be circumstance. It might be fear. Worth asking which."
+        ),
+    }
+    default = (
+        "Here's where it gets interesting.",
+        f"Your chart predicted one pattern. Your choices revealed another. That gap — between what ancient wisdom said about your mind and how you actually operate — is your most interesting territory, {name}. It's not a contradiction. It's the evidence of a life that has shaped you beyond your original wiring."
+    )
+    title, body = copy.get(dim, default)
+    return title, body
+
+
+def _hidden_strength_insight(name, dim, score):
+    labels = {
+        "processing_speed": "fast processing",
+        "reasoning_style":  "intuitive reasoning",
+        "risk_tolerance":   "risk appetite",
+        "focus_mode":       "big-picture thinking",
+        "decision_driver":  "emotional intelligence",
+        "certainty_need":   "tolerance for ambiguity",
+        "thinking_mode":    "collaborative thinking",
+        "time_horizon":     "long-term orientation",
+    }
+    label = labels.get(dim, "this strength")
+    return (
+        f"You built {label}. Your chart didn't predict it.",
+        f"This one isn't in your Vedic wiring — it's something you developed. Your chart didn't call {label} as a natural trait, but your behavior showed it clearly. Earned strengths are often more reliable than natural ones, {name}. You know how to use this because you learned it the hard way."
+    )
+
+
+def _growth_edge_insight(name, dim):
+    labels = {
+        "processing_speed": "the speed your Nakshatra is known for",
+        "reasoning_style":  "the intuitive processing your chart predicted",
+        "risk_tolerance":   "the risk tolerance your Nakshatra carries",
+        "focus_mode":       "the big-picture thinking in your blueprint",
+        "decision_driver":  "the emotional depth your chart indicated",
+        "certainty_need":   "the patience with ambiguity your Nakshatra holds",
+        "thinking_mode":    "the collaborative instinct your chart pointed to",
+        "time_horizon":     "the long-term thinking your blueprint carries",
+    }
+    label = labels.get(dim, "a trait your chart strongly predicted")
+    return (
+        "Your chart sees something in you that your choices haven't caught up to yet.",
+        f"The Vedic prediction pointed strongly toward {label}. Your behavior didn't reflect it — not yet. That gap isn't a failure, {name}. It's a direction. The chart isn't wrong about what's there. It's just waiting for the right conditions to come forward."
+    )
+
+
+# ─── SERVE FRONTEND ──────────────────────────────────────────────────────────
+
+frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend")
+frontend_path = os.path.abspath(frontend_path)
+
+if os.path.exists(frontend_path):
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
