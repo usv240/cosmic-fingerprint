@@ -64,6 +64,11 @@ class ChatRequest(BaseModel):
     question:   str
 
 
+class OracleRequest(BaseModel):
+    session_id: str
+    decision:   str
+
+
 # ─── ROUTES ──────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -166,6 +171,89 @@ def generate_insights(req: InsightRequest):
     return {
         "session_id": req.session_id,
         "insights":   insights,
+    }
+
+
+@app.post("/api/oracle")
+def oracle(req: OracleRequest):
+    """
+    Analyzes a real decision through three lenses:
+    chart prediction, behavioral reality, and the gap.
+    """
+    session = SESSIONS.get(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    profile   = session["profile"]
+    beh       = session.get("behavioral_scores", {})
+    cross_ref = session.get("cross_ref", {})
+    name      = session["name"].split()[0]
+    pred      = profile.predicted_scores
+    diverged  = cross_ref.get("divergence_points", [])
+    aligned   = cross_ref.get("aligned_traits", [])
+    alignment = cross_ref.get("alignment_score", 50)
+    decision  = req.decision.strip()
+
+    dim_labels = {
+        "processing_speed": "processing speed",
+        "reasoning_style":  "reasoning style",
+        "risk_tolerance":   "risk tolerance",
+        "focus_mode":       "focus mode",
+        "decision_driver":  "decision driver",
+        "certainty_need":   "certainty need",
+        "thinking_mode":    "thinking mode",
+        "time_horizon":     "time horizon",
+    }
+
+    top_div   = diverged[0] if diverged else None
+    top_align = aligned[0]  if aligned  else None
+
+    # Part 1 — What your chart says
+    risk_pred = pred.get("risk_tolerance", 5)
+    if risk_pred >= 7:
+        chart_verdict = f"Your {profile.moon_nakshatra_name} blueprint points toward bold action. Your chart predicts you'd lean into this decision rather than away from it — your wiring is built for risk when the vision is clear."
+    elif risk_pred <= 3:
+        chart_verdict = f"Your {profile.moon_nakshatra_name} blueprint urges caution here. Your chart predicts you'd want more certainty before moving — gathering evidence, testing assumptions, building safety nets first."
+    else:
+        chart_verdict = f"Your {profile.moon_nakshatra_name} blueprint sits in the middle on this one. Your chart predicts measured consideration — neither rushing in nor pulling back, but weighing deliberately before committing."
+
+    # Part 2 — What your behavior says
+    risk_beh = beh.get("risk_tolerance", 5)
+    driver   = beh.get("decision_driver", 5)
+    if risk_beh >= 7:
+        beh_verdict = f"But your actual choices tell a different story, {name}. Across 12 scenarios, you consistently leaned toward the bolder option. When the clock was ticking, you moved. Your behavioral pattern says you'll take this leap — probably sooner than feels comfortable."
+    elif risk_beh <= 3:
+        beh_verdict = f"Your choices revealed something important, {name}: you move carefully in practice, regardless of what your chart says. Even when the data pointed toward risk, you chose the measured path. Your pattern says you'll need more certainty before you act on this."
+    else:
+        beh_verdict = f"Your behavioral pattern here is honest, {name}: you're somewhere in the middle. You don't rush — but you don't stall either. Your choices suggest you'll move on this when you've gathered enough signal. Not yet — but not never."
+
+    # Part 3 — What the gap reveals
+    if top_div and top_div == "risk_tolerance":
+        gap_verdict = f"Here's the most useful thing your fingerprint reveals about this specific decision: there's a {abs(int(risk_pred - risk_beh))}-point gap between how your chart expected you to handle risk and how you actually do. That gap is your decision-making signature. The chart expected {'more caution' if risk_beh > risk_pred else 'more boldness'} — you've built the opposite. Trust the pattern you've actually lived, not the one that was predicted."
+    elif top_div:
+        gap_insight = f"Your biggest divergence is in {dim_labels.get(top_div, top_div)}. That gap is directly relevant here — it's where your instincts have grown beyond your blueprint. Whatever your chart predicts for this decision, your actual behavioral pattern has more authority."
+        gap_verdict = f"{gap_insight} One concrete move: before deciding, ask yourself which version of you is making this call — the one your chart predicted, or the one your choices have built. At {alignment:.0f}% alignment, {name}, you have real agency here. The stars gave you a starting point. You've already gone beyond it."
+    else:
+        gap_verdict = f"At {alignment:.0f}% alignment, {name}, your chart and your choices are largely in agreement. That's rare — and it means your instincts on this decision are probably trustworthy. The gap that exists is in your favor: you've grown in the direction your chart pointed. Act from that."
+
+    return {
+        "parts": [
+            {
+                "title": "What your chart says you'll do",
+                "body":  chart_verdict,
+                "color": "#C9A84C"
+            },
+            {
+                "title": "What your choices say you'll actually do",
+                "body":  beh_verdict,
+                "color": "#4C8EC9"
+            },
+            {
+                "title": "What the gap reveals",
+                "body":  gap_verdict,
+                "color": "#9C6FDB"
+            },
+        ]
     }
 
 
