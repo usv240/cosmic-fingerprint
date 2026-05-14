@@ -488,63 +488,167 @@ def _chat_response(name: str, profile, beh: dict, cross_ref: dict, q: str) -> st
         "time_horizon":     "time horizon",
     }
 
-    # Nakshatra / astrology questions
-    if any(w in q for w in ["nakshatra", "star", "astrology", "vedic", "chart", "birth", "cosmos", "moon"]):
+    # Fortune telling / future prediction — redirect gracefully
+    if any(w in q for w in ["when", "will i", "will i get", "job", "career", "marriage", "money",
+                              "predict", "future", "fortune", "when will", "how long", "salary"]):
+        top_div = dim_labels.get(diverged[0], "your biggest gap") if diverged else "your growth edges"
         return (
-            f"Your Moon is in {nakshatra}. In Jyotish, the Nakshatra is considered the most direct indicator of the mind's architecture — not who you are on the surface, but how you actually process the world underneath. "
-            f"Your chart predicted specific traits from this placement, and your responses {"confirmed most of them" if alignment > 65 else "revealed some interesting departures from the prediction"}. "
-            f"That gap — or alignment — is the most honest thing your fingerprint can tell you."
+            f"I can't predict the future, {name} — that's not what your fingerprint does. "
+            f"What it does tell you is HOW your mind operates when you're making the decisions that shape that future. "
+            f"Your {top_div} score shows where your instincts and your wiring diverge most. "
+            f"That's the data that actually matters for the choices in front of you."
+        )
+
+    # "Tell more" / "more" / "explain" / "expand" — expand on biggest divergence
+    if any(w in q for w in ["more", "tell more", "explain", "expand", "elaborate", "go on",
+                              "and", "so", "interesting", "really", "wow"]) and len(q.split()) <= 5:
+        if diverged:
+            top_div = diverged[0]
+            top_label = dim_labels.get(top_div, top_div)
+            pred_score = pred.get(top_div, 5)
+            beh_score  = beh.get(top_div, 5)
+            direction  = "higher" if beh_score > pred_score else "lower"
+            gap        = abs(int(pred_score - beh_score))
+            return (
+                f"Let's go deeper on {top_label} — your biggest divergence, {name}. "
+                f"Your {nakshatra} chart predicted {pred_score}/10. Your choices showed {beh_score}/10. "
+                f"That's a {gap}-point gap. Your actual behavior ran {direction} than your blueprint expected. "
+                f"A gap this size usually means something specific happened in your life that reshaped this trait. "
+                f"It's not random — it's a response to experience. "
+                f"{'You became more cautious than your wiring intended.' if beh_score < pred_score else 'You became bolder than your wiring intended.'} "
+                f"That's earned. Not predicted."
+            )
+        return (
+            f"The most interesting thing in your fingerprint, {name}: your {alignment:.0f}% alignment score. "
+            f"That number means {'your chart and your actual mind are deeply in sync — rare.' if alignment > 75 else 'real divergence exists between who the stars said you would be and who your choices have made you.' if alignment < 55 else 'you are mostly who your chart predicted, with some genuinely surprising departures.'} "
+            f"The departures are where the real story is."
+        )
+
+    # "Am I who the stars said I'd be" / identity questions
+    if any(w in q for w in ["who am i", "who i am", "stars said", "supposed to be",
+                              "meant to be", "predicted", "am i", "identity", "who"]):
+        if alignment >= 75:
+            return (
+                f"At {alignment:.0f}% alignment, {name} — largely yes. "
+                f"Your {nakshatra} blueprint made specific predictions about how your mind works, "
+                f"and your choices confirmed most of them. "
+                f"Your anchored traits are real. The foundation your chart predicted is the foundation you actually stand on. "
+                f"The 25% that diverged? That's where you went beyond the prediction. That's yours, not the stars'."
+            )
+        elif alignment >= 55:
+            return (
+                f"Mostly, {name} — but not entirely, and that's the interesting part. "
+                f"At {alignment:.0f}% alignment, your {nakshatra} chart called most of it right. "
+                f"But in {len(diverged)} dimension{'s' if len(diverged) > 1 else ''}, your choices went a different direction than predicted. "
+                f"You are who the stars said you'd be — plus something they didn't see coming."
+            )
+        else:
+            return (
+                f"Less than you might expect, {name}. At {alignment:.0f}% alignment, "
+                f"your life has shaped you significantly beyond what your {nakshatra} chart predicted. "
+                f"That's not a failure of astrology — it's evidence of everything you've lived through. "
+                f"You've grown in directions the stars didn't fully anticipate. "
+                f"That kind of person is harder to read — and usually more interesting."
+            )
+
+    # Hidden strength questions
+    if any(w in q for w in ["hidden", "strength", "built", "earned", "developed",
+                              "surprising", "surprise", "unexpected", "interesting"]):
+        hidden = [k for k in beh if beh.get(k, 5) >= 7 and pred.get(k, 5) < 6]
+        if hidden:
+            dim   = hidden[0]
+            label = dim_labels.get(dim, dim)
+            score = beh.get(dim, 7)
+            return (
+                f"Your clearest hidden strength is {label}, {name}. "
+                f"Your chart predicted {pred.get(dim, 5)}/10 here. Your choices showed {score}/10. "
+                f"That gap isn't in your Vedic wiring — you built it. "
+                f"Earned strengths are often more reliable than natural ones because you know exactly how you got there. "
+                f"You've used this in ways your chart never anticipated."
+            )
+        return (
+            f"Your most surprising result, {name}: {alignment:.0f}% alignment overall. "
+            f"{'Most people expect more divergence. Your chart read you accurately.' if alignment > 70 else 'The gap between prediction and reality is where you have grown most — and that growth is entirely yours.'}"
+        )
+
+    # Nakshatra / astrology questions
+    if any(w in q for w in ["nakshatra", "star", "astrology", "vedic", "chart",
+                              "birth", "cosmos", "moon", "jyotish", "placement"]):
+        return (
+            f"Your Moon is in {nakshatra}. In Jyotish, the Moon Nakshatra is the primary indicator "
+            f"of the mind's architecture — how you process information, make decisions, and respond under pressure. "
+            f"It's more specific than a sun sign. "
+            f"Your chart made predictions across 8 cognitive dimensions from this placement. "
+            f"At {alignment:.0f}% alignment, {'it was right about most of them.' if alignment > 65 else 'your life has taken you in some genuinely different directions.'}"
         )
 
     # Risk questions
-    if any(w in q for w in ["risk", "bold", "safe", "caution", "danger", "bet"]):
+    if any(w in q for w in ["risk", "bold", "safe", "caution", "danger", "bet", "gamble"]):
         risk_pred = pred.get("risk_tolerance", 5)
         risk_beh  = beh.get("risk_tolerance", 5)
-        direction = "more cautious than your chart predicted" if risk_beh < risk_pred else "bolder than your chart predicted" if risk_beh > risk_pred else "exactly as bold as your chart predicted"
+        direction = "more cautious than your chart predicted" if risk_beh < risk_pred else \
+                    "bolder than your chart predicted" if risk_beh > risk_pred else \
+                    "exactly as bold as your chart predicted"
         return (
-            f"Your risk tolerance is one of the most telling dimensions in your fingerprint, {name}. "
-            f"Your Nakshatra predicted a score of {risk_pred}/10. Your actual choices scored {risk_beh}/10 — you came in {direction}. "
-            f"{'Risk aversion is often built, not born — something taught you to be careful.' if risk_beh < risk_pred else 'That boldness beyond your chart? Something in your life pushed you to bet on yourself more than your wiring expected.' if risk_beh > risk_pred else 'That consistency is rare. Your instincts and your blueprint are in sync here.'}"
+            f"Risk tolerance: your chart predicted {risk_pred}/10. Your choices: {risk_beh}/10. "
+            f"You ran {direction}. "
+            f"{'Something taught you to be careful. That caution is a response to something real.' if risk_beh < risk_pred else 'Something pushed you to bet on yourself more than your wiring expected. That boldness is earned.' if risk_beh > risk_pred else f'That consistency is rare, {name}. Your instincts and your blueprint are in sync here.'}"
         )
 
     # Alignment / divergence questions
-    if any(w in q for w in ["align", "match", "gap", "differ", "diverge", "different", "percent", "%"]):
+    if any(w in q for w in ["align", "match", "gap", "differ", "diverge",
+                              "different", "percent", "%", "score", "number"]):
         if diverged:
             top_div = dim_labels.get(diverged[0], diverged[0])
             return (
-                f"Your overall alignment is {alignment:.0f}%, {name}. The biggest gap is in {top_div}. "
-                f"Your chart predicted one thing; your choices showed another. That's not a contradiction — it's evidence of how your life has shaped you beyond your original wiring. "
-                f"{'High alignment means your instincts are deeply anchored in who you were born to be.' if alignment > 70 else 'Lower alignment means you have grown significantly in ways your chart did not fully anticipate. That is often the most interesting kind of person.'}"
+                f"{alignment:.0f}% alignment, {name}. Your biggest gap is in {top_div}. "
+                f"{'High alignment — your chart and your choices tell the same story.' if alignment > 70 else 'Real divergence — your life has shaped you beyond what your chart anticipated.'} "
+                f"The gap isn't a flaw. It's where you grew."
             )
-        return f"Your alignment sits at {alignment:.0f}%. {'That is strong — your chart and your choices are telling the same story.' if alignment > 70 else 'There is real divergence between what your chart predicted and how you actually operate. That gap is your most interesting territory.'}"
+        return (
+            f"Your alignment is {alignment:.0f}%, {name}. "
+            f"{'Strong — your wiring and your behavior are deeply in sync.' if alignment > 70 else 'There is genuine divergence. That means your choices have taken you somewhere your chart did not fully predict.'}"
+        )
 
     # Decision making / intuition / logic
-    if any(w in q for w in ["decision", "choose", "logic", "intuition", "feel", "think", "analytical"]):
+    if any(w in q for w in ["decision", "choose", "logic", "intuition",
+                              "feel", "analytical", "rational", "emotional"]):
         driver_pred = pred.get("decision_driver", 5)
         driver_beh  = beh.get("decision_driver", 5)
-        style = "data and logic" if driver_beh <= 4 else "emotion and empathy" if driver_beh >= 7 else "a balance of logic and feeling"
+        style = "data and logic" if driver_beh <= 4 else \
+                "emotion and empathy" if driver_beh >= 7 else \
+                "a balance of logic and feeling"
         return (
-            f"When it comes to decisions, your choices revealed that you lead with {style}, {name}. "
-            f"Your chart predicted a score of {driver_pred}/10 on this axis — {'your behavior matched that closely' if abs(driver_pred - driver_beh) <= 2 else 'your behavior went in a noticeably different direction'}. "
-            f"Decision style is one of the hardest things to see clearly in yourself. Your fingerprint gives you the outside view."
+            f"Your choices revealed that you lead with {style}, {name}. "
+            f"Chart predicted {driver_pred}/10. You showed {driver_beh}/10. "
+            f"{'Matched closely — your decision style is consistent with your blueprint.' if abs(driver_pred - driver_beh) <= 2 else 'A real gap — how you actually decide differs from what your chart expected. That difference is usually where the most interesting growth has happened.'}"
         )
 
     # Future / time horizon
-    if any(w in q for w in ["future", "long term", "patient", "now", "present", "horizon", "time"]):
+    if any(w in q for w in ["long term", "patient", "present", "horizon", "short term", "now vs later"]):
         th_beh = beh.get("time_horizon", 5)
         return (
-            f"Your time horizon score came out at {th_beh}/10, {name}. "
-            f"{'You are strongly future-oriented — you naturally trade present comfort for long-term gain.' if th_beh >= 7 else 'You tend to operate in the present — immediate, concrete, tangible outcomes motivate you more than distant payoffs.' if th_beh <= 3 else 'You balance present and future — you can think long-term when it matters, but you do not ignore what is in front of you.'} "
-            f"Your chart's prediction on this was {pred.get('time_horizon', 5)}/10. {'They matched closely.' if abs(pred.get('time_horizon', 5) - th_beh) <= 2 else 'The gap between prediction and reality here is one of your more interesting divergences.'}"
+            f"Time horizon: {th_beh}/10 from your choices, {name}. "
+            f"{'Future-oriented — you trade present comfort for long-term gain naturally.' if th_beh >= 7 else 'Present-focused — immediate, concrete outcomes drive you more than distant payoffs.' if th_beh <= 3 else 'Balanced — you can think long-term when it matters without ignoring what is in front of you.'} "
+            f"Your chart predicted {pred.get('time_horizon', 5)}/10. "
+            f"{'Close match.' if abs(pred.get('time_horizon', 5) - th_beh) <= 2 else 'A notable gap — one of your more interesting divergences.'}"
         )
 
-    # Default — contextual but general
-    top_aligned = dim_labels.get(aligned[0], "your core traits") if aligned else "several dimensions"
+    # Default — shorter, specific, not repetitive
+    if diverged:
+        top_div   = dim_labels.get(diverged[0], diverged[0])
+        pred_score = pred.get(diverged[0], 5)
+        beh_score  = beh.get(diverged[0], 5)
+        return (
+            f"Your fingerprint's most interesting data point, {name}: "
+            f"a {abs(int(pred_score - beh_score))}-point gap in {top_div}. "
+            f"Chart said {pred_score}/10. You showed {beh_score}/10. "
+            f"Ask me about that gap — or about risk, decisions, your nakshatra, or what your alignment score means."
+        )
     return (
-        f"That's a great question, {name}. Your fingerprint shows that your most anchored trait is {top_aligned} — "
-        f"{'the place where your chart and your choices agreed completely' if aligned else 'a dimension where prediction and reality overlap'}. "
-        f"With {alignment:.0f}% overall alignment and your Moon in {nakshatra}, there is a lot in your data worth sitting with. "
-        f"Try asking about a specific dimension — risk tolerance, decision making, time horizon — and I can go deeper."
+        f"At {alignment:.0f}% alignment, {name}, your chart and your choices are "
+        f"{'largely telling the same story' if alignment > 65 else 'in some genuinely interesting tension'}. "
+        f"Ask me about risk tolerance, decision making, time horizon, or your nakshatra — I can go specific."
     )
 
 
