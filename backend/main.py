@@ -59,6 +59,11 @@ class InsightRequest(BaseModel):
     session_id: str
 
 
+class ChatRequest(BaseModel):
+    session_id: str
+    question:   str
+
+
 # ─── ROUTES ──────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -162,6 +167,26 @@ def generate_insights(req: InsightRequest):
         "session_id": req.session_id,
         "insights":   insights,
     }
+
+
+@app.post("/api/chat")
+def chat(req: ChatRequest):
+    """
+    Answers a question about the user's fingerprint using their actual session data.
+    Keyword-based routing gives genuinely personalised replies without an external AI call.
+    """
+    session = SESSIONS.get(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    name      = session["name"].split()[0]
+    profile   = session["profile"]
+    beh       = session.get("behavioral_scores", {})
+    cross_ref = session.get("cross_ref", {})
+    q         = req.question.lower()
+
+    response = _chat_response(name, profile, beh, cross_ref, q)
+    return {"response": response}
 
 
 @app.get("/api/share/{session_id}")
@@ -352,6 +377,86 @@ def _growth_edge_insight(name, dim):
     return (
         "Your chart sees something in you that your choices haven't caught up to yet.",
         f"The Vedic prediction pointed strongly toward {label}. Your behavior didn't reflect it — not yet. That gap isn't a failure, {name}. It's a direction. The chart isn't wrong about what's there. It's just waiting for the right conditions to come forward."
+    )
+
+
+# ─── CHAT ENGINE ─────────────────────────────────────────────────────────────
+
+def _chat_response(name: str, profile, beh: dict, cross_ref: dict, q: str) -> str:
+    nakshatra  = profile.moon_nakshatra_name
+    alignment  = cross_ref.get("alignment_score", 50)
+    diverged   = cross_ref.get("divergence_points", [])
+    aligned    = cross_ref.get("aligned_traits", [])
+    pred       = profile.predicted_scores
+
+    dim_labels = {
+        "processing_speed": "processing speed",
+        "reasoning_style":  "reasoning style",
+        "risk_tolerance":   "risk tolerance",
+        "focus_mode":       "focus mode",
+        "decision_driver":  "decision driver",
+        "certainty_need":   "certainty need",
+        "thinking_mode":    "thinking mode",
+        "time_horizon":     "time horizon",
+    }
+
+    # Nakshatra / astrology questions
+    if any(w in q for w in ["nakshatra", "star", "astrology", "vedic", "chart", "birth", "cosmos", "moon"]):
+        return (
+            f"Your Moon is in {nakshatra}. In Jyotish, the Nakshatra is considered the most direct indicator of the mind's architecture — not who you are on the surface, but how you actually process the world underneath. "
+            f"Your chart predicted specific traits from this placement, and your responses {"confirmed most of them" if alignment > 65 else "revealed some interesting departures from the prediction"}. "
+            f"That gap — or alignment — is the most honest thing your fingerprint can tell you."
+        )
+
+    # Risk questions
+    if any(w in q for w in ["risk", "bold", "safe", "caution", "danger", "bet"]):
+        risk_pred = pred.get("risk_tolerance", 5)
+        risk_beh  = beh.get("risk_tolerance", 5)
+        direction = "more cautious than your chart predicted" if risk_beh < risk_pred else "bolder than your chart predicted" if risk_beh > risk_pred else "exactly as bold as your chart predicted"
+        return (
+            f"Your risk tolerance is one of the most telling dimensions in your fingerprint, {name}. "
+            f"Your Nakshatra predicted a score of {risk_pred}/10. Your actual choices scored {risk_beh}/10 — you came in {direction}. "
+            f"{'Risk aversion is often built, not born — something taught you to be careful.' if risk_beh < risk_pred else 'That boldness beyond your chart? Something in your life pushed you to bet on yourself more than your wiring expected.' if risk_beh > risk_pred else 'That consistency is rare. Your instincts and your blueprint are in sync here.'}"
+        )
+
+    # Alignment / divergence questions
+    if any(w in q for w in ["align", "match", "gap", "differ", "diverge", "different", "percent", "%"]):
+        if diverged:
+            top_div = dim_labels.get(diverged[0], diverged[0])
+            return (
+                f"Your overall alignment is {alignment:.0f}%, {name}. The biggest gap is in {top_div}. "
+                f"Your chart predicted one thing; your choices showed another. That's not a contradiction — it's evidence of how your life has shaped you beyond your original wiring. "
+                f"{'High alignment means your instincts are deeply anchored in who you were born to be.' if alignment > 70 else 'Lower alignment means you have grown significantly in ways your chart did not fully anticipate. That is often the most interesting kind of person.'}"
+            )
+        return f"Your alignment sits at {alignment:.0f}%. {'That is strong — your chart and your choices are telling the same story.' if alignment > 70 else 'There is real divergence between what your chart predicted and how you actually operate. That gap is your most interesting territory.'}"
+
+    # Decision making / intuition / logic
+    if any(w in q for w in ["decision", "choose", "logic", "intuition", "feel", "think", "analytical"]):
+        driver_pred = pred.get("decision_driver", 5)
+        driver_beh  = beh.get("decision_driver", 5)
+        style = "data and logic" if driver_beh <= 4 else "emotion and empathy" if driver_beh >= 7 else "a balance of logic and feeling"
+        return (
+            f"When it comes to decisions, your choices revealed that you lead with {style}, {name}. "
+            f"Your chart predicted a score of {driver_pred}/10 on this axis — {'your behavior matched that closely' if abs(driver_pred - driver_beh) <= 2 else 'your behavior went in a noticeably different direction'}. "
+            f"Decision style is one of the hardest things to see clearly in yourself. Your fingerprint gives you the outside view."
+        )
+
+    # Future / time horizon
+    if any(w in q for w in ["future", "long term", "patient", "now", "present", "horizon", "time"]):
+        th_beh = beh.get("time_horizon", 5)
+        return (
+            f"Your time horizon score came out at {th_beh}/10, {name}. "
+            f"{'You are strongly future-oriented — you naturally trade present comfort for long-term gain.' if th_beh >= 7 else 'You tend to operate in the present — immediate, concrete, tangible outcomes motivate you more than distant payoffs.' if th_beh <= 3 else 'You balance present and future — you can think long-term when it matters, but you do not ignore what is in front of you.'} "
+            f"Your chart's prediction on this was {pred.get('time_horizon', 5)}/10. {'They matched closely.' if abs(pred.get('time_horizon', 5) - th_beh) <= 2 else 'The gap between prediction and reality here is one of your more interesting divergences.'}"
+        )
+
+    # Default — contextual but general
+    top_aligned = dim_labels.get(aligned[0], "your core traits") if aligned else "several dimensions"
+    return (
+        f"That's a great question, {name}. Your fingerprint shows that your most anchored trait is {top_aligned} — "
+        f"{'the place where your chart and your choices agreed completely' if aligned else 'a dimension where prediction and reality overlap'}. "
+        f"With {alignment:.0f}% overall alignment and your Moon in {nakshatra}, there is a lot in your data worth sitting with. "
+        f"Try asking about a specific dimension — risk tolerance, decision making, time horizon — and I can go deeper."
     )
 
 
