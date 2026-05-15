@@ -6,12 +6,55 @@ All routes in one place. Clean, centralized, no scattered logic.
 import os
 import sys
 import uuid
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
+
+# ERNIE AI config — set ERNIE_API_KEY and ERNIE_SECRET_KEY on Railway
+ERNIE_API_KEY    = os.getenv("ERNIE_API_KEY", "")
+ERNIE_SECRET_KEY = os.getenv("ERNIE_SECRET_KEY", "")
+ERNIE_ACCESS_TOKEN = os.getenv("ERNIE_ACCESS_TOKEN", "")  # pre-generated token (alternative)
+
+
+async def _get_ernie_token() -> str:
+    """Exchange API key + secret for an access token."""
+    if ERNIE_ACCESS_TOKEN:
+        return ERNIE_ACCESS_TOKEN
+    url = "https://aip.baidubce.com/oauth/2.0/token"
+    params = {
+        "grant_type": "client_credentials",
+        "client_id": ERNIE_API_KEY,
+        "client_secret": ERNIE_SECRET_KEY,
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(url, params=params)
+        return r.json().get("access_token", "")
+
+
+async def _call_ernie(system_prompt: str, user_message: str) -> Optional[str]:
+    """Call ERNIE-4.5 and return the response text, or None on failure."""
+    if not ERNIE_API_KEY and not ERNIE_ACCESS_TOKEN:
+        return None
+    try:
+        token = await _get_ernie_token()
+        if not token:
+            return None
+        url = f"https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-4.5-8k?access_token={token}"
+        payload = {
+            "messages": [{"role": "user", "content": f"{system_prompt}\n\nUser question: {user_message}"}],
+            "temperature": 0.8,
+            "top_p": 0.95,
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(url, json=payload)
+            data = r.json()
+            return data.get("result") or None
+    except Exception:
+        return None
 
 # All project files live in backend/ — no path gymnastics needed
 sys.path.insert(0, os.path.dirname(__file__))
@@ -312,47 +355,68 @@ def oracle(req: OracleRequest):
 
 
 @app.post("/api/chat")
-def chat(req: ChatRequest):
+async def chat(req: ChatRequest):
     """
-    Answers a question about the user's fingerprint using their actual session data.
-    Keyword-based routing gives genuinely personalised replies without an external AI call.
+    Answers questions about the user's fingerprint.
+    Tries ERNIE AI first for genuine personalised responses; falls back to deterministic engine.
     """
     session = SESSIONS.get(req.session_id)
 
-    # Session not in memory — use directly passed state data
+    # Build profile from session or directly passed data
     if not session and req.name:
-        pred = req.predicted_scores or {}
-        beh  = req.behavioral_scores or {}
-        divp = req.divergence_points or []
-        alig = req.aligned_traits or []
+        pred       = req.predicted_scores or {}
+        beh        = req.behavioral_scores or {}
+        divp       = req.divergence_points or []
+        alig       = req.aligned_traits or []
         alig_score = req.alignment_score or 50
+        nakshatra  = req.moon_nakshatra_name or "your Nakshatra"
 
-        # Build a lightweight profile-like object for _chat_response
         class _FakeProfile:
-            moon_nakshatra_name = req.moon_nakshatra_name or "your Nakshatra"
+            moon_nakshatra_name = nakshatra
             predicted_scores    = pred
 
         name      = req.name.split()[0]
-        cross_ref = {
-            "alignment_score":   alig_score,
-            "divergence_points": divp,
-            "aligned_traits":    alig,
-            "dimension_gaps":    {},
-        }
-        q        = req.question.lower()
-        response = _chat_response(name, _FakeProfile(), beh, cross_ref, q)
-        return {"response": response}
-
-    if not session:
+        profile   = _FakeProfile()
+        cross_ref = {"alignment_score": alig_score, "divergence_points": divp, "aligned_traits": alig, "dimension_gaps": {}}
+    elif not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    else:
+        name       = session["name"].split()[0]
+        profile    = session["profile"]
+        beh        = session.get("behavioral_scores", {})
+        cross_ref  = session.get("cross_ref", {})
+        pred       = profile.predicted_scores
+        divp       = cross_ref.get("divergence_points", [])
+        alig       = cross_ref.get("aligned_traits", [])
+        alig_score = cross_ref.get("alignment_score", 50)
+        nakshatra  = profile.moon_nakshatra_name
 
-    name      = session["name"].split()[0]
-    profile   = session["profile"]
-    beh       = session.get("behavioral_scores", {})
-    cross_ref = session.get("cross_ref", {})
-    q         = req.question.lower()
+    # Try ERNIE AI first for genuine responses
+    ernie_system = f"""You are an insightful guide helping {name} understand their Vedic Cognitive Fingerprint — a cross-reference between their ancient Vedic birth chart and their actual behavioral choices.
 
-    response = _chat_response(name, profile, beh, cross_ref, q)
+Their data:
+- Moon Nakshatra: {nakshatra}
+- Alignment score: {alig_score}% (how closely their birth chart prediction matched their real behavioral choices)
+- Dimensions where they diverged from their chart: {', '.join(divp) if divp else 'none noted'}
+- Dimensions where they matched their chart: {', '.join(alig) if alig else 'none noted'}
+- Predicted scores from Vedic chart (1-10 scale): {pred}
+- Actual behavioral scores from 12 scenario choices (1-10 scale): {beh}
+
+Rules:
+- Respond in 3-5 sentences maximum
+- Be specific — reference their actual numbers, their nakshatra, their divergence points
+- Be honest and grounded, not flattering
+- Sound like a thoughtful human, not a horoscope
+- Do not say "I am an AI" or "as an AI"
+- Speak directly to {name} using "you" and "your"
+- If they ask about a decision, give concrete guidance based on their behavioral pattern, not just their chart"""
+
+    ernie_response = await _call_ernie(ernie_system, req.question)
+    if ernie_response:
+        return {"response": ernie_response}
+
+    # Fallback to deterministic engine
+    response = _chat_response(name, profile, beh, cross_ref, req.question.lower())
     return {"response": response}
 
 
@@ -576,34 +640,53 @@ def _chat_response(name: str, profile, beh: dict, cross_ref: dict, q: str) -> st
         time_beh   = beh.get("time_horizon", 5)
         speed_beh  = beh.get("processing_speed", 5)
 
+        certainty_beh = beh.get("certainty_need", 5)
+        driver_beh    = beh.get("decision_driver", 5)
+        thinking_beh  = beh.get("thinking_mode", 5)
+
+        # Strict multi-condition matching — each figure requires 3+ criteria
         figures = [
-            (risk_beh >= 7 and reason_beh >= 6, "Nikola Tesla",
-             f"High risk tolerance, intuitive reasoning, future-oriented thinking — Tesla's mind worked exactly this way. He saw patterns others missed and bet everything on visions nobody else could see yet."),
-            (reason_beh >= 7 and focus_beh <= 4, "Leonardo da Vinci",
-             f"Intuitive, big-picture thinking combined with restless curiosity — da Vinci never stayed in one discipline long enough for people to catch up. Your mind moves similarly."),
-            (speed_beh <= 4 and focus_beh >= 7, "Marie Curie",
-             f"Deliberate, detail-focused, certainty-seeking — Curie's greatest strength was refusing to move until the evidence was complete. Your fingerprint shows that same methodical precision."),
-            (risk_beh <= 3 and time_beh >= 7, "Warren Buffett",
-             f"Cautious, future-oriented, patient — Buffett's cognitive signature is exactly this: low risk tolerance combined with extreme long-term thinking. He plays a different game at a different timescale."),
-            (reason_beh >= 6 and beh.get("decision_driver", 5) >= 7, "Maya Angelou",
-             f"Intuitive, emotion-led, collaborative — Angelou processed the world through feeling first and found universal truth in the personal. Your behavioral pattern shows the same emotional intelligence."),
-            (speed_beh >= 8 and risk_beh >= 6, "Elon Musk",
-             f"Fast processing, high risk tolerance, future-focused — the combination that defines someone who decides quickly and bets large. Your fingerprint shows similar cognitive velocity."),
-            (focus_beh >= 7 and beh.get("certainty_need", 5) >= 7, "Isaac Newton",
-             f"Detail-focused, certainty-seeking, independent thinking — Newton worked alone, went deep, and refused to publish until he was certain. Your fingerprint reflects that same standard."),
-            (beh.get("thinking_mode", 5) >= 7 and beh.get("decision_driver", 5) >= 6, "Gandhi",
-             f"Collaborative, emotion-driven, patient — Gandhi's cognitive strength was his ability to move with people rather than ahead of them. Your fingerprint shows similar collective intelligence."),
+            (speed_beh >= 8 and risk_beh >= 7 and time_beh >= 7,
+             "Elon Musk",
+             f"Your fingerprint shows three traits that rarely appear together: fast processing ({speed_beh}/10), high risk tolerance ({risk_beh}/10), and long-term orientation ({time_beh}/10). That's the cognitive signature of someone who decides at velocity and bets on decades, not quarters."),
+            (risk_beh >= 7 and reason_beh >= 7 and time_beh >= 7 and speed_beh <= 6,
+             "Nikola Tesla",
+             f"Intuitive reasoning ({reason_beh}/10), high risk appetite ({risk_beh}/10), and future-oriented thinking ({time_beh}/10) — combined with a more deliberate processing speed. Tesla didn't move fast. He moved right. Your fingerprint carries the same quality."),
+            (reason_beh >= 7 and focus_beh <= 3 and risk_beh >= 5,
+             "Leonardo da Vinci",
+             f"Intuitive reasoning ({reason_beh}/10) paired with big-picture focus ({focus_beh}/10) — da Vinci was constitutionally incapable of staying narrow. Your fingerprint shows the same cross-domain wiring. The problem is finishing. The strength is seeing what others miss."),
+            (speed_beh <= 3 and focus_beh >= 7 and certainty_beh >= 7,
+             "Marie Curie",
+             f"Deliberate processing ({speed_beh}/10), detail focus ({focus_beh}/10), and high certainty need ({certainty_beh}/10) — Curie's power was precision under time pressure. She refused to publish until the data was undeniable. Your fingerprint carries that same standard."),
+            (risk_beh <= 3 and time_beh >= 7 and certainty_beh >= 6,
+             "Warren Buffett",
+             f"Low risk tolerance ({risk_beh}/10), extreme long-term orientation ({time_beh}/10), and high certainty need ({certainty_beh}/10). Buffett doesn't play the same game as everyone else — he plays a longer one. Your fingerprint reflects the same patience-as-strategy mindset."),
+            (driver_beh >= 7 and thinking_beh >= 7 and reason_beh >= 6,
+             "Maya Angelou",
+             f"Emotion-driven decisions ({driver_beh}/10), collaborative thinking ({thinking_beh}/10), and intuitive reasoning ({reason_beh}/10) — Angelou's cognitive power was processing the world through relationship and feeling, then finding the universal truth inside the personal. Your fingerprint matches that architecture."),
+            (focus_beh >= 7 and certainty_beh >= 7 and thinking_beh <= 3,
+             "Isaac Newton",
+             f"Deep detail focus ({focus_beh}/10), high certainty need ({certainty_beh}/10), and strongly independent thinking ({thinking_beh}/10). Newton worked alone, went deep, and refused to release his work until it was complete. Your fingerprint carries that same uncompromising internal standard."),
+            (thinking_beh >= 7 and driver_beh >= 6 and risk_beh <= 5,
+             "Nelson Mandela",
+             f"Collaborative thinking ({thinking_beh}/10), emotion-led decisions ({driver_beh}/10), and measured risk tolerance ({risk_beh}/10). Mandela's cognitive signature was moving with people rather than ahead of them — patience as a strategic tool, not a constraint. Your fingerprint shows that same quality."),
         ]
 
+        # Score each figure by how many criteria match (not just pass/fail)
         for condition, figure_name, description in figures:
             if condition:
-                return f"Your cognitive fingerprint most closely resembles {figure_name}. {description}"
+                return f"Your cognitive twin: {figure_name}. {description}"
 
+        # No clean match — generate a specific "between" response
+        top_two = sorted(
+            [("Tesla", risk_beh + reason_beh), ("Curie", (10 - speed_beh) + focus_beh),
+             ("Buffett", (10 - risk_beh) + time_beh), ("da Vinci", reason_beh + (10 - focus_beh))],
+            key=lambda x: x[1], reverse=True
+        )
         return (
-            f"Your fingerprint is genuinely unusual, {name} — it doesn't map cleanly to a single historical figure. "
-            f"At {alignment:.0f}% alignment with your {nakshatra} blueprint, you sit at an interesting intersection. "
-            f"The closest parallel might be someone who defied easy categorization in their own time — "
-            f"which is usually a sign of someone operating ahead of the frameworks available to describe them."
+            f"Your fingerprint sits between {top_two[0][0]} and {top_two[1][0]}, {name} — and that's the more interesting answer. "
+            f"At {alignment:.0f}% alignment with your {nakshatra} blueprint, your cognitive profile doesn't map cleanly to one archetype. "
+            f"The people who are hardest to categorize are usually the ones building something no existing category fits."
         )
 
     # Fortune telling / future prediction — redirect gracefully
