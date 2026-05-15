@@ -488,6 +488,45 @@ def _chat_response(name: str, profile, beh: dict, cross_ref: dict, q: str) -> st
         "time_horizon":     "time horizon",
     }
 
+    # Historical figure / cognitive twin question
+    if any(w in q for w in ["historical", "figure", "resemble", "like", "similar to",
+                              "twin", "match", "comparable", "who am i like"]):
+        risk_beh   = beh.get("risk_tolerance", 5)
+        reason_beh = beh.get("reasoning_style", 5)
+        focus_beh  = beh.get("focus_mode", 5)
+        time_beh   = beh.get("time_horizon", 5)
+        speed_beh  = beh.get("processing_speed", 5)
+
+        figures = [
+            (risk_beh >= 7 and reason_beh >= 6, "Nikola Tesla",
+             f"High risk tolerance, intuitive reasoning, future-oriented thinking — Tesla's mind worked exactly this way. He saw patterns others missed and bet everything on visions nobody else could see yet."),
+            (reason_beh >= 7 and focus_beh <= 4, "Leonardo da Vinci",
+             f"Intuitive, big-picture thinking combined with restless curiosity — da Vinci never stayed in one discipline long enough for people to catch up. Your mind moves similarly."),
+            (speed_beh <= 4 and focus_beh >= 7, "Marie Curie",
+             f"Deliberate, detail-focused, certainty-seeking — Curie's greatest strength was refusing to move until the evidence was complete. Your fingerprint shows that same methodical precision."),
+            (risk_beh <= 3 and time_beh >= 7, "Warren Buffett",
+             f"Cautious, future-oriented, patient — Buffett's cognitive signature is exactly this: low risk tolerance combined with extreme long-term thinking. He plays a different game at a different timescale."),
+            (reason_beh >= 6 and beh.get("decision_driver", 5) >= 7, "Maya Angelou",
+             f"Intuitive, emotion-led, collaborative — Angelou processed the world through feeling first and found universal truth in the personal. Your behavioral pattern shows the same emotional intelligence."),
+            (speed_beh >= 8 and risk_beh >= 6, "Elon Musk",
+             f"Fast processing, high risk tolerance, future-focused — the combination that defines someone who decides quickly and bets large. Your fingerprint shows similar cognitive velocity."),
+            (focus_beh >= 7 and beh.get("certainty_need", 5) >= 7, "Isaac Newton",
+             f"Detail-focused, certainty-seeking, independent thinking — Newton worked alone, went deep, and refused to publish until he was certain. Your fingerprint reflects that same standard."),
+            (beh.get("thinking_mode", 5) >= 7 and beh.get("decision_driver", 5) >= 6, "Gandhi",
+             f"Collaborative, emotion-driven, patient — Gandhi's cognitive strength was his ability to move with people rather than ahead of them. Your fingerprint shows similar collective intelligence."),
+        ]
+
+        for condition, figure_name, description in figures:
+            if condition:
+                return f"Your cognitive fingerprint most closely resembles {figure_name}. {description}"
+
+        return (
+            f"Your fingerprint is genuinely unusual, {name} — it doesn't map cleanly to a single historical figure. "
+            f"At {alignment:.0f}% alignment with your {nakshatra} blueprint, you sit at an interesting intersection. "
+            f"The closest parallel might be someone who defied easy categorization in their own time — "
+            f"which is usually a sign of someone operating ahead of the frameworks available to describe them."
+        )
+
     # Fortune telling / future prediction — redirect gracefully
     if any(w in q for w in ["when", "will i", "will i get", "job", "career", "marriage", "money",
                               "predict", "future", "fortune", "when will", "how long", "salary"]):
