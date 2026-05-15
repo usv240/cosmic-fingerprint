@@ -563,9 +563,26 @@ def _chat_response(name: str, profile, beh: dict, cross_ref: dict, q: str) -> st
             f"The departures are where the real story is."
         )
 
+    # People / social / collaborative questions
+    if any(w in q for w in ["people", "social", "friend", "relationship", "team",
+                              "collaborate", "work with", "get along", "interpersonal",
+                              "connect", "empathy", "others", "colleagues"]):
+        think_pred = pred.get("thinking_mode", 5)
+        think_beh  = beh.get("thinking_mode", 5)
+        driver_beh = beh.get("decision_driver", 5)
+        style = "collaborative" if think_beh >= 7 else "independent" if think_beh <= 3 else "selectively collaborative"
+        empathy = "high empathy" if driver_beh >= 7 else "logic-first" if driver_beh <= 3 else "balanced"
+        return (
+            f"Your fingerprint shows a {style} thinking style with {empathy} in how you engage with people, {name}. "
+            f"Thinking Mode: chart predicted {think_pred}/10, your choices showed {think_beh}/10 — "
+            f"{'you matched your blueprint here' if abs(think_pred - think_beh) <= 2 else 'you diverged from your chart on this one'}. "
+            f"{'You tend to process best with others around — collaboration energises rather than drains you.' if think_beh >= 7 else 'You tend to do your best thinking alone — collaboration is something you choose deliberately, not your default.' if think_beh <= 3 else 'You switch between solo and collaborative modes depending on the situation — which is actually a strength.'}"
+        )
+
     # "Am I who the stars said I'd be" / identity questions
     if any(w in q for w in ["who am i", "who i am", "stars said", "supposed to be",
-                              "meant to be", "predicted", "am i", "identity", "who"]):
+                              "meant to be", "am i who", "am i the", "am i really",
+                              "identity", "who was i"]) or q.strip() in ["am i", "who am i"]:
         if alignment >= 75:
             return (
                 f"At {alignment:.0f}% alignment, {name} — largely yes. "
