@@ -56,7 +56,15 @@ class AssessmentRequest(BaseModel):
 
 
 class InsightRequest(BaseModel):
-    session_id: str
+    session_id:           str
+    name:                 Optional[str]  = None
+    moon_nakshatra_name:  Optional[str]  = None
+    nakshatra_description: Optional[str] = None
+    alignment_score:      Optional[int]  = None
+    divergence_points:    Optional[list] = None
+    aligned_traits:       Optional[list] = None
+    predicted_scores:     Optional[dict] = None
+    behavioral_scores:    Optional[dict] = None
 
 
 class ChatRequest(BaseModel):
@@ -170,13 +178,29 @@ def generate_insights(req: InsightRequest):
     No external AI call needed — deterministic insight engine keeps it fast.
     """
     session = SESSIONS.get(req.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
 
-    profile   = session["profile"]
-    behavioral = session.get("behavioral_scores", {})
-    cross_ref  = session.get("cross_ref", {})
-    name       = session["name"].split()[0]  # first name only
+    if not session and req.name:
+        class _FakeProfile:
+            moon_nakshatra_name = req.moon_nakshatra_name or "your Nakshatra"
+            predicted_scores    = req.predicted_scores or {}
+        profile    = _FakeProfile()
+        behavioral = req.behavioral_scores or {}
+        divp       = req.divergence_points or []
+        alig       = req.aligned_traits or []
+        cross_ref  = {
+            "alignment_score":   req.alignment_score or 50,
+            "divergence_points": divp,
+            "aligned_traits":    alig,
+            "dimension_gaps":    {},
+        }
+        name = req.name.split()[0]
+    elif not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    else:
+        profile    = session["profile"]
+        behavioral = session.get("behavioral_scores", {})
+        cross_ref  = session.get("cross_ref", {})
+        name       = session["name"].split()[0]
 
     insights = _build_insights(
         name, profile, behavioral, cross_ref
