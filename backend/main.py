@@ -14,29 +14,50 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 
-# ERNIE AI config — set ERNIE_API_KEY and ERNIE_SECRET_KEY on Railway
-ERNIE_API_KEY    = os.getenv("ERNIE_API_KEY", "")
-ERNIE_SECRET_KEY = os.getenv("ERNIE_SECRET_KEY", "")
-ERNIE_ACCESS_TOKEN = os.getenv("ERNIE_ACCESS_TOKEN", "")  # pre-generated token (alternative)
+# AI config — tries Groq first (easy signup), falls back to ERNIE, then deterministic
+GROQ_API_KEY       = os.getenv("GROQ_API_KEY", "")
+ERNIE_API_KEY      = os.getenv("ERNIE_API_KEY", "")
+ERNIE_SECRET_KEY   = os.getenv("ERNIE_SECRET_KEY", "")
+ERNIE_ACCESS_TOKEN = os.getenv("ERNIE_ACCESS_TOKEN", "")
+
+
+async def _call_groq(system_prompt: str, user_message: str) -> Optional[str]:
+    """Call Groq (Llama 3.3 70B) — free, fast, no Chinese phone needed."""
+    if not GROQ_API_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ],
+                    "temperature": 0.8,
+                    "max_tokens": 300,
+                },
+            )
+            data = r.json()
+            return data["choices"][0]["message"]["content"] or None
+    except Exception:
+        return None
 
 
 async def _get_ernie_token() -> str:
-    """Exchange API key + secret for an access token."""
     if ERNIE_ACCESS_TOKEN:
         return ERNIE_ACCESS_TOKEN
-    url = "https://aip.baidubce.com/oauth/2.0/token"
-    params = {
-        "grant_type": "client_credentials",
-        "client_id": ERNIE_API_KEY,
-        "client_secret": ERNIE_SECRET_KEY,
-    }
     async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(url, params=params)
+        r = await client.post(
+            "https://aip.baidubce.com/oauth/2.0/token",
+            params={"grant_type": "client_credentials", "client_id": ERNIE_API_KEY, "client_secret": ERNIE_SECRET_KEY},
+        )
         return r.json().get("access_token", "")
 
 
 async def _call_ernie(system_prompt: str, user_message: str) -> Optional[str]:
-    """Call ERNIE-4.5 and return the response text, or None on failure."""
     if not ERNIE_API_KEY and not ERNIE_ACCESS_TOKEN:
         return None
     try:
@@ -44,17 +65,19 @@ async def _call_ernie(system_prompt: str, user_message: str) -> Optional[str]:
         if not token:
             return None
         url = f"https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/ernie-4.5-8k?access_token={token}"
-        payload = {
-            "messages": [{"role": "user", "content": f"{system_prompt}\n\nUser question: {user_message}"}],
-            "temperature": 0.8,
-            "top_p": 0.95,
-        }
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(url, json=payload)
-            data = r.json()
-            return data.get("result") or None
+            r = await client.post(url, json={"messages": [{"role": "user", "content": f"{system_prompt}\n\n{user_message}"}], "temperature": 0.8})
+            return r.json().get("result") or None
     except Exception:
         return None
+
+
+async def _call_ai(system_prompt: str, user_message: str) -> Optional[str]:
+    """Try Groq → ERNIE → None (deterministic fallback)."""
+    result = await _call_groq(system_prompt, user_message)
+    if result:
+        return result
+    return await _call_ernie(system_prompt, user_message)
 
 # All project files live in backend/ — no path gymnastics needed
 sys.path.insert(0, os.path.dirname(__file__))
@@ -411,9 +434,9 @@ Rules:
 - Speak directly to {name} using "you" and "your"
 - If they ask about a decision, give concrete guidance based on their behavioral pattern, not just their chart"""
 
-    ernie_response = await _call_ernie(ernie_system, req.question)
-    if ernie_response:
-        return {"response": ernie_response}
+    ai_response = await _call_ai(ernie_system, req.question)
+    if ai_response:
+        return {"response": ai_response}
 
     # Fallback to deterministic engine
     response = _chat_response(name, profile, beh, cross_ref, req.question.lower())
