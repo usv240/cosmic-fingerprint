@@ -126,7 +126,7 @@ class InsightRequest(BaseModel):
     name:                 Optional[str]  = None
     moon_nakshatra_name:  Optional[str]  = None
     nakshatra_description: Optional[str] = None
-    alignment_score:      Optional[int]  = None
+    alignment_score:      Optional[float] = None
     divergence_points:    Optional[list] = None
     aligned_traits:       Optional[list] = None
     predicted_scores:     Optional[dict] = None
@@ -139,7 +139,7 @@ class ChatRequest(BaseModel):
     name:                 Optional[str]  = None
     moon_nakshatra_name:  Optional[str]  = None
     nakshatra_description: Optional[str] = None
-    alignment_score:      Optional[int]  = None
+    alignment_score:      Optional[float] = None
     divergence_points:    Optional[list] = None
     aligned_traits:       Optional[list] = None
     predicted_scores:     Optional[dict] = None
@@ -151,7 +151,7 @@ class OracleRequest(BaseModel):
     decision:             str
     name:                 Optional[str]  = None
     moon_nakshatra_name:  Optional[str]  = None
-    alignment_score:      Optional[int]  = None
+    alignment_score:      Optional[float] = None
     divergence_points:    Optional[list] = None
     aligned_traits:       Optional[list] = None
     predicted_scores:     Optional[dict] = None
@@ -391,7 +391,7 @@ async def chat(req: ChatRequest):
         beh        = req.behavioral_scores or {}
         divp       = req.divergence_points or []
         alig       = req.aligned_traits or []
-        alig_score = req.alignment_score or 50
+        alig_score = int(req.alignment_score or 50)
         nakshatra  = req.moon_nakshatra_name or "your Nakshatra"
 
         class _FakeProfile:
