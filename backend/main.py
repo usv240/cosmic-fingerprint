@@ -245,7 +245,7 @@ def generate_insights(req: InsightRequest):
     """
     session = SESSIONS.get(req.session_id)
 
-    if not session and req.name:
+    if not session and (req.name or req.behavioral_scores or req.predicted_scores):
         class _FakeProfile:
             moon_nakshatra_name = req.moon_nakshatra_name or "your Nakshatra"
             predicted_scores    = req.predicted_scores or {}
@@ -259,7 +259,7 @@ def generate_insights(req: InsightRequest):
             "aligned_traits":    alig,
             "dimension_gaps":    {},
         }
-        name = req.name.split()[0]
+        name = (req.name or "Friend").split()[0]
     elif not session:
         raise HTTPException(status_code=404, detail="Session not found")
     else:
@@ -288,7 +288,7 @@ def oracle(req: OracleRequest):
     session = SESSIONS.get(req.session_id)
 
     # Session not in memory — use directly passed state data
-    if not session and req.name:
+    if not session and (req.name or req.behavioral_scores or req.predicted_scores):
         class _FakeProfile:
             moon_nakshatra_name = req.moon_nakshatra_name or "your Nakshatra"
             predicted_scores    = req.predicted_scores or {}
@@ -297,7 +297,7 @@ def oracle(req: OracleRequest):
         diverged  = req.divergence_points or []
         aligned   = req.aligned_traits or []
         alignment = req.alignment_score or 50
-        name      = req.name.split()[0]
+        name      = (req.name or "Friend").split()[0]
         pred      = profile.predicted_scores
         decision  = req.decision.strip()
         cross_ref = {"divergence_points": diverged, "aligned_traits": aligned, "alignment_score": alignment}
@@ -386,7 +386,7 @@ async def chat(req: ChatRequest):
     session = SESSIONS.get(req.session_id)
 
     # Build profile from session or directly passed data
-    if not session and req.name:
+    if not session and (req.name or req.behavioral_scores or req.predicted_scores):
         pred       = req.predicted_scores or {}
         beh        = req.behavioral_scores or {}
         divp       = req.divergence_points or []
@@ -398,7 +398,7 @@ async def chat(req: ChatRequest):
             moon_nakshatra_name = nakshatra
             predicted_scores    = pred
 
-        name      = req.name.split()[0]
+        name      = (req.name or "Friend").split()[0]
         profile   = _FakeProfile()
         cross_ref = {"alignment_score": alig_score, "divergence_points": divp, "aligned_traits": alig, "dimension_gaps": {}}
     elif not session:
