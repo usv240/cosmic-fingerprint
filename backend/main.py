@@ -10,7 +10,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -441,6 +441,86 @@ Rules:
     # Fallback to deterministic engine
     response = _chat_response(name, profile, beh, cross_ref, req.question.lower())
     return {"response": response}
+
+
+@app.post("/api/chat-stream")
+async def chat_stream(req: ChatRequest):
+    """Streaming version of chat — word-by-word response like ChatGPT."""
+    session = SESSIONS.get(req.session_id)
+    if not session and (req.name or req.behavioral_scores or req.predicted_scores):
+        pred = req.predicted_scores or {}
+        beh  = req.behavioral_scores or {}
+        divp = req.divergence_points or []
+        alig = req.aligned_traits or []
+        alig_score = int(req.alignment_score or 50)
+        nakshatra  = req.moon_nakshatra_name or "your Nakshatra"
+        class _FP:
+            moon_nakshatra_name = nakshatra
+            predicted_scores    = pred
+        name = (req.name or "Friend").split()[0]
+        profile = _FP()
+        cross_ref = {"alignment_score": alig_score, "divergence_points": divp, "aligned_traits": alig, "dimension_gaps": {}}
+    elif session:
+        name = session["name"].split()[0]
+        profile = session["profile"]
+        beh = session.get("behavioral_scores", {})
+        pred = profile.predicted_scores
+        cross_ref = session.get("cross_ref", {})
+        alig_score = cross_ref.get("alignment_score", 50)
+        nakshatra = profile.moon_nakshatra_name
+        divp = cross_ref.get("divergence_points", [])
+        alig = cross_ref.get("aligned_traits", [])
+    else:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    system = f"""You are an insightful guide helping {name} understand their Vedic Cognitive Fingerprint.
+Moon Nakshatra: {nakshatra} | Alignment: {alig_score}% | Divergences: {', '.join(divp) if divp else 'none'} | Aligned: {', '.join(alig) if alig else 'none'}
+Predicted scores: {pred} | Behavioral scores: {beh}
+Respond in 3-4 sentences. Be specific to their numbers. Honest, grounded, slightly poetic. Speak directly to {name}."""
+
+    if not GROQ_API_KEY:
+        fallback = _chat_response(name, profile, beh, cross_ref, req.question.lower())
+        async def fallback_stream():
+            words = fallback.split(' ')
+            for i, word in enumerate(words):
+                yield f"data: {word}{' ' if i < len(words)-1 else ''}\n\n"
+                await __import__('asyncio').sleep(0.04)
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(fallback_stream(), media_type="text/event-stream",
+                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    async def groq_stream():
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                async with client.stream(
+                    "POST",
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                    json={"model": "llama-3.3-70b-versatile", "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": req.question},
+                    ], "temperature": 0.8, "max_tokens": 300, "stream": True},
+                ) as r:
+                    async for line in r.aiter_lines():
+                        if line.startswith("data: "):
+                            chunk = line[6:]
+                            if chunk == "[DONE]":
+                                yield "data: [DONE]\n\n"
+                                break
+                            try:
+                                import json
+                                delta = json.loads(chunk)["choices"][0]["delta"].get("content", "")
+                                if delta:
+                                    yield f"data: {delta}\n\n"
+                            except Exception:
+                                pass
+        except Exception:
+            fallback = _chat_response(name, profile, beh, cross_ref, req.question.lower())
+            yield f"data: {fallback}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(groq_stream(), media_type="text/event-stream",
+                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/share/{session_id}")
