@@ -64,7 +64,7 @@ A dimension with gap > 3 becomes a **divergence point**. Gap ≤ 1 is an **align
 | AI — final fallback | Deterministic response engine (no external call) |
 | Astrology API | [Free Astrology API](https://json.freeastrologyapi.com) — Lahiri ayanamsha, topocentric |
 | Session storage | In-memory dict (Railway instance) |
-| Frontend | React / TypeScript, deployed on MeDo platform |
+| Frontend | React / TypeScript, deployed on [MeDo](https://medo.dev) |
 | Streaming | Server-Sent Events (SSE) for word-by-word chat output |
 
 ---

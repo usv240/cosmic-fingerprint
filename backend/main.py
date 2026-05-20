@@ -97,7 +97,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory session store (fine for hackathon)
+# In-memory session store
 SESSIONS: dict = {}
 
 
